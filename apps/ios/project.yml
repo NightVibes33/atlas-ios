@@ -1,0 +1,34 @@
+name: Atlas
+options:
+  bundleIdPrefix: com.nightvibes33
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    SUPPORTS_MACCATALYST: NO
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "0.1.0"
+targets:
+  AtlasApp:
+    type: application
+    platform: iOS
+    sources:
+      - AtlasApp
+    info:
+      path: AtlasApp/Info.plist
+    entitlements:
+      path: AtlasApp/AtlasApp.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nightvibes33.atlas
+        PRODUCT_NAME: Atlas
+        INFOPLIST_FILE: AtlasApp/Info.plist
+        CODE_SIGN_ENTITLEMENTS: AtlasApp/AtlasApp.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+    scheme:
+      testTargets: []
