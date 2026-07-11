@@ -22,7 +22,6 @@ jobs:
       - name: Reconstruct hash-verified full source
         run: |
           set -euo pipefail
-          ls atlas-import-part-* >/dev/null
           cat atlas-import-part-* > /tmp/atlas-native-source.b64
           echo '75bd061daa5a16676a1423e5fc3bab47be7c88bdaf7b8d677dc4be6012f46316  /tmp/atlas-native-source.b64' | shasum -a 256 -c -
           python3 - <<'PY'
@@ -36,178 +35,23 @@ jobs:
           rsync -a --delete --exclude='.git/' /tmp/atlas-native-source/ ./
           chmod +x scripts/*.sh
 
-      - name: Apply native compile fixes and native-only branding
+      - name: Apply native-only branding
         run: |
-          set -euo pipefail
-          cat > apps/ios/AtlasApp/ProductionMinimuxerBridge.swift <<'SWIFT'
-          import Foundation
-          import AtlasCore
+          cat > README.md <<'EOF'
+          # Atlas iOS
 
-          #if canImport(minimuxer)
-          private import minimuxer
+          Atlas is a native iOS sideloading and app-management project for physical iPhone and iPad devices.
 
-          actor ProductionMinimuxerBridge: LocalDeviceMuxer {
-              func runtimeStatus() -> NativeRuntimeStatus {
-                  NativeRuntimeStatus(isReady: true, message: "minimuxer runtime linked")
-              }
+          Atlas is not a web app, dashboard, API server, browser sideloader, or desktop companion product.
 
-              private var pairingFile: URL?
-              private var started = false
+          ## Native transport
 
-              func configure(pairingRecord: PairingRecord) async throws {
-                  let url = FileManager.default.temporaryDirectory
-                      .appendingPathComponent("atlas-pairing-\(pairingRecord.deviceUDID).plist")
-                  try pairingRecord.data.write(to: url, options: [.atomic, .completeFileProtection])
-                  pairingFile = url
-              }
+          The iOS app integrates with LocalDevVPN and minimuxer for device communication, pairing, installation, refresh, activation, deactivation, and JIT workflows.
 
-              func start() async throws {
-                  guard let pairingFile else {
-                      throw LocalDeviceTransportError.pairingRecordMissing("unknown")
-                  }
-                  let log = FileManager.default.temporaryDirectory.appendingPathComponent("atlas-minimuxer.log")
-                  try startWithLogger(pairingFile.path, log.path, true)
-                  target_minimuxer_address()
-                  guard ready() else { throw LocalDeviceTransportError.tunnelDidNotConnect }
-                  started = true
-              }
+          ## GitHub-built unsigned IPA
 
-              func stop() async {
-                  started = false
-                  if let pairingFile { try? FileManager.default.removeItem(at: pairingFile) }
-                  pairingFile = nil
-              }
-
-              func install(ipa: URL, udid: String) async throws {
-                  guard started else { throw LocalDeviceTransportError.tunnelDidNotConnect }
-                  let data = try Data(contentsOf: ipa, options: .mappedIfSafe)
-                  let bundleID = try IPAIdentity.bundleIdentifier(from: ipa)
-                  try data.withUnsafeBytes { rawBuffer in
-                      let bytes = rawBuffer.bindMemory(to: UInt8.self)
-                      try yeet_app_afc(bundleID, bytes)
-                  }
-                  try install_ipa(bundleID)
-              }
-
-              func activate(bundleIdentifier: String, udid: String) async throws {
-                  // installation_proxy activates the installed app.
-              }
-
-              func deactivate(bundleIdentifier: String, udid: String) async throws {
-                  try remove_app(bundleIdentifier)
-              }
-
-              func enableJIT(bundleIdentifier: String, udid: String) async throws {
-                  try debug_app(bundleIdentifier)
-              }
-          }
-          #else
-          actor ProductionMinimuxerBridge: LocalDeviceMuxer {
-              enum Error: LocalizedError {
-                  case missingFramework
-                  var errorDescription: String? {
-                      "minimuxer.xcframework is missing. Run scripts/bootstrap-native.sh on macOS before generating the Xcode project."
-                  }
-              }
-              func runtimeStatus() -> NativeRuntimeStatus { NativeRuntimeStatus(isReady: false, message: Error.missingFramework.localizedDescription) }
-              func configure(pairingRecord: PairingRecord) async throws { throw Error.missingFramework }
-              func start() async throws { throw Error.missingFramework }
-              func stop() async {}
-              func install(ipa: URL, udid: String) async throws { throw Error.missingFramework }
-              func activate(bundleIdentifier: String, udid: String) async throws { throw Error.missingFramework }
-              func deactivate(bundleIdentifier: String, udid: String) async throws { throw Error.missingFramework }
-              func enableJIT(bundleIdentifier: String, udid: String) async throws { throw Error.missingFramework }
-          }
-          #endif
-
-          private enum IPAIdentity {
-              enum ParseError: LocalizedError {
-                  case unsupported
-                  var errorDescription: String? { "Unable to read the IPA bundle identifier." }
-              }
-              static func bundleIdentifier(from ipa: URL) throws -> String {
-                  let sidecar = ipa.deletingPathExtension().appendingPathExtension("bundleid")
-                  if let value = try? String(contentsOf: sidecar, encoding: .utf8)
-                      .trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
-                      return value
-                  }
-                  throw ParseError.unsupported
-              }
-          }
-          SWIFT
-
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('apps/ios/AtlasApp/Views.swift')
-          text = path.read_text()
-          text = text.replace('LabeledContent("IPA","Choose app")', 'LabeledContent("IPA", value: "Choose app")')
-          text = text.replace('LabeledContent("Certificate","Choose P12")', 'LabeledContent("Certificate", value: "Choose P12")')
-          text = text.replace('LabeledContent("Profile","Choose profile")', 'LabeledContent("Profile", value: "Choose profile")')
-          path.write_text(text)
-          PY
-
-          cat > README.md <<'README'
-          # Atlas for iOS
-
-          Atlas is a native iPhone sideloading and app-management application for iOS 26. It is built as an unsigned arm64 IPA on GitHub's macOS 26 runners.
-
-          Atlas is not a web app, dashboard, API server, or browser-based sideloader.
-
-          ## Native architecture
-
-          Atlas uses the on-device transport expected by SideStore-style workflows:
-
-          `LocalDevVPN → minimuxer → lockdown / MobileInstallation`
-
-          The iOS app contains the user interface, pairing-record handling, device transport coordination, IPA installation and refresh paths, JIT requests, AltSource support, provisioning diagnostics, secure persistence, and job orchestration.
-
-          ## Repository layout
-
-          - `apps/ios/AtlasApp` — native SwiftUI iPhone application.
-          - `packages/AtlasCore` — portable Swift domain models, persistence, diagnostics, and tests.
-          - `docs` — native architecture, LocalDevVPN integration, verification, and device-test documentation.
-          - `scripts` — minimuxer bootstrap and release validation.
-          - `.github/workflows` — macOS 26 / Xcode 26 unsigned device-IPA build.
-
-          ## Build an unsigned iOS 26 IPA
-
-          GitHub Actions builds for a real arm64 iPhone target with code signing disabled. The artifact contains `Payload/Atlas.app` and a SHA-256 checksum.
-
-          Local macOS build:
-
-          ```bash
-          brew install xcodegen
-          ./scripts/bootstrap-native.sh
-          xcodebuild \
-            -project apps/ios/Atlas.xcodeproj \
-            -scheme AtlasApp \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            ARCHS=arm64 \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            build
-          ```
-
-          ## Device requirements
-
-          - iPhone running iOS 26.
-          - LocalDevVPN installed and active.
-          - A pairing record for the device.
-          - The minimuxer XCFramework installed by `scripts/bootstrap-native.sh`.
-          - A signing method for installing the unsigned build.
-
-          ## Verification
-
-          ```bash
-          swift test --package-path packages/AtlasCore
-          ```
-
-          GitHub CI additionally compiles the full physical-device target, verifies arm64 output, removes code-signing material, validates the IPA archive, and publishes its checksum.
-          README
-
-          grep -RniE 'web companion|companion web|web dashboard|API server|browser-based sideloader' README.md docs apps/ios packages || true
+          GitHub Actions builds the complete native app on `macos-26` with Xcode 26 for the physical-device `iphoneos` SDK and packages an unsigned arm64 IPA.
+          EOF
 
       - name: Select Xcode 26
         run: |
@@ -218,30 +62,28 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
-      - name: Install XcodeGen and minimuxer
+      - name: Install XcodeGen, minimuxer, and generated Swift bridge
         run: |
           set -euo pipefail
           brew install xcodegen
-          cat > scripts/bootstrap-native.sh <<'SCRIPT'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-          OUT="$ROOT/apps/ios/Frameworks"
           TMP="$(mktemp -d)"
-          trap 'rm -rf "$TMP"' EXIT
-          mkdir -p "$OUT"
-          URL='https://github.com/jkcoxson/minimuxer/releases/download/build/minimuxer.xcframework.zip'
-          curl -fL --retry 4 --retry-all-errors "$URL" -o "$TMP/minimuxer.zip"
-          unzip -q "$TMP/minimuxer.zip" -d "$TMP/unpacked"
-          FRAMEWORK="$(find "$TMP/unpacked" -name 'minimuxer.xcframework' -type d | head -1)"
+          mkdir -p apps/ios/Frameworks apps/ios/AtlasApp/GeneratedMinimuxer
+          curl -fL --retry 4 --retry-all-errors \
+            'https://github.com/jkcoxson/minimuxer/releases/download/build/minimuxer.xcframework.zip' \
+            -o "$TMP/minimuxer.zip"
+          curl -fL --retry 4 --retry-all-errors \
+            'https://github.com/jkcoxson/minimuxer/releases/download/build/generated.zip' \
+            -o "$TMP/generated.zip"
+          unzip -q "$TMP/minimuxer.zip" -d "$TMP/framework"
+          unzip -q "$TMP/generated.zip" -d "$TMP/generated"
+          FRAMEWORK="$(find "$TMP/framework" -name 'minimuxer.xcframework' -type d | head -1)"
           test -n "$FRAMEWORK"
-          rm -rf "$OUT/minimuxer.xcframework"
-          cp -R "$FRAMEWORK" "$OUT/minimuxer.xcframework"
-          command -v xcodegen >/dev/null
-          (cd "$ROOT/apps/ios" && xcodegen generate)
-          SCRIPT
-          chmod +x scripts/bootstrap-native.sh
-          ./scripts/bootstrap-native.sh
+          rm -rf apps/ios/Frameworks/minimuxer.xcframework apps/ios/AtlasApp/GeneratedMinimuxer
+          mkdir -p apps/ios/AtlasApp/GeneratedMinimuxer
+          cp -R "$FRAMEWORK" apps/ios/Frameworks/minimuxer.xcframework
+          find "$TMP/generated" -type f -name '*.swift' -exec cp {} apps/ios/AtlasApp/GeneratedMinimuxer/ \;
+          test "$(find apps/ios/AtlasApp/GeneratedMinimuxer -type f -name '*.swift' | wc -l | tr -d ' ')" -gt 0
+          (cd apps/ios && xcodegen generate)
 
       - name: Test portable Swift packages
         run: swift test --package-path packages/AtlasCore
@@ -307,7 +149,7 @@ jobs:
       - name: Publish complete source to main
         run: |
           set -euo pipefail
-          rm -rf build apps/ios/Frameworks apps/ios/Atlas.xcodeproj atlas-import-part-* atlas-full-source.b64.* IMPORT.md IMPORT_READY RETRY_NATIVE_BUILD RETRY_COMPILER_ERRORS RETRY_DIAGNOSTIC_ARTIFACT RETRY_SOURCE_FIXES
+          rm -rf build apps/ios/Frameworks apps/ios/Atlas.xcodeproj atlas-import-part-* atlas-full-source.b64.* IMPORT.md IMPORT_READY RETRY_* NATIVE_ONLY
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
