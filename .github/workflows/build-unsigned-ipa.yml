@@ -62,20 +62,27 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
-      - name: Install XcodeGen and minimuxer
+      - name: Install XcodeGen, minimuxer, and generated Swift bridge
         run: |
           set -euo pipefail
           brew install xcodegen
           TMP="$(mktemp -d)"
-          mkdir -p apps/ios/Frameworks
+          mkdir -p apps/ios/Frameworks apps/ios/AtlasApp/GeneratedMinimuxer
           curl -fL --retry 4 --retry-all-errors \
             'https://github.com/jkcoxson/minimuxer/releases/download/build/minimuxer.xcframework.zip' \
             -o "$TMP/minimuxer.zip"
-          unzip -q "$TMP/minimuxer.zip" -d "$TMP/unpacked"
-          FRAMEWORK="$(find "$TMP/unpacked" -name 'minimuxer.xcframework' -type d | head -1)"
+          curl -fL --retry 4 --retry-all-errors \
+            'https://github.com/jkcoxson/minimuxer/releases/download/build/generated.zip' \
+            -o "$TMP/generated.zip"
+          unzip -q "$TMP/minimuxer.zip" -d "$TMP/framework"
+          unzip -q "$TMP/generated.zip" -d "$TMP/generated"
+          FRAMEWORK="$(find "$TMP/framework" -name 'minimuxer.xcframework' -type d | head -1)"
           test -n "$FRAMEWORK"
-          rm -rf apps/ios/Frameworks/minimuxer.xcframework
+          rm -rf apps/ios/Frameworks/minimuxer.xcframework apps/ios/AtlasApp/GeneratedMinimuxer
+          mkdir -p apps/ios/AtlasApp/GeneratedMinimuxer
           cp -R "$FRAMEWORK" apps/ios/Frameworks/minimuxer.xcframework
+          find "$TMP/generated" -type f -name '*.swift' -exec cp {} apps/ios/AtlasApp/GeneratedMinimuxer/ \;
+          test "$(find apps/ios/AtlasApp/GeneratedMinimuxer -type f -name '*.swift' | wc -l | tr -d ' ')" -gt 0
           (cd apps/ios && xcodegen generate)
 
       - name: Capture minimuxer interface
@@ -83,7 +90,7 @@ jobs:
           set -euo pipefail
           OUT=/tmp/minimuxer-interface
           mkdir -p "$OUT"
-          find apps/ios/Frameworks/minimuxer.xcframework -type f -print | sort > "$OUT/files.txt"
+          find apps/ios/Frameworks/minimuxer.xcframework apps/ios/AtlasApp/GeneratedMinimuxer -type f -print | sort > "$OUT/files.txt"
           while IFS= read -r file; do
             case "$file" in
               *.h|*.swiftinterface|*.swift|*/module.modulemap|*/Info.plist)
@@ -93,12 +100,8 @@ jobs:
                 ;;
             esac
           done < "$OUT/files.txt"
-          find apps/ios/Frameworks/minimuxer.xcframework -type f -perm +111 -print0 | while IFS= read -r -d '' bin; do
-            echo "===== $bin =====" >> "$OUT/symbols.txt"
-            nm -gU "$bin" 2>/dev/null | grep -E 'start|ready|target|minimux|yeet|install_ipa|remove_app|debug_app' >> "$OUT/symbols.txt" || true
-          done
-          cat "$OUT/text-interface.txt"
-          cat "$OUT/symbols.txt" || true
+          grep -R -nE 'startWithLogger|target_minimuxer_address|ready|yeet_app_afc|install_ipa|remove_app|debug_app' apps/ios/AtlasApp/GeneratedMinimuxer >> "$OUT/matches.txt" || true
+          cat "$OUT/matches.txt" || true
 
       - name: Upload minimuxer interface
         uses: actions/upload-artifact@v4
