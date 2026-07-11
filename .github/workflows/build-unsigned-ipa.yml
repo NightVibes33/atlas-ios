@@ -19,19 +19,39 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
-      - name: Reconstruct full source
+      - name: Reconstruct hash-verified full source
         run: |
           set -euo pipefail
-          test -f atlas-full-source.b64
+          cat atlas-import-part-* > /tmp/atlas-native-source.b64
+          echo '75bd061daa5a16676a1423e5fc3bab47be7c88bdaf7b8d677dc4be6012f46316  /tmp/atlas-native-source.b64' | shasum -a 256 -c -
           python3 - <<'PY'
           import base64
           from pathlib import Path
-          Path('/tmp/atlas-full-source.tar.gz').write_bytes(base64.b64decode(Path('atlas-full-source.b64').read_bytes()))
+          Path('/tmp/atlas-native-source.tar.gz').write_bytes(base64.b64decode(Path('/tmp/atlas-native-source.b64').read_bytes()))
           PY
-          mkdir -p /tmp/atlas-full-source
-          tar -xzf /tmp/atlas-full-source.tar.gz -C /tmp/atlas-full-source
-          rsync -a --delete --exclude='.git/' /tmp/atlas-full-source/ ./
+          echo 'e24e88bfad848f82756d5de298d0ea91a3a9d72f6fde9b08ec200f340912dd6d  /tmp/atlas-native-source.tar.gz' | shasum -a 256 -c -
+          mkdir -p /tmp/atlas-native-source
+          tar -xzf /tmp/atlas-native-source.tar.gz -C /tmp/atlas-native-source
+          rsync -a --delete --exclude='.git/' /tmp/atlas-native-source/ ./
           chmod +x scripts/*.sh
+
+      - name: Apply native-only branding
+        run: |
+          cat > README.md <<'EOF'
+          # Atlas iOS
+
+          Atlas is a native iOS sideloading and app-management project for physical iPhone and iPad devices.
+
+          Atlas is not a web app, dashboard, API server, browser sideloader, or desktop companion product.
+
+          ## Native transport
+
+          The iOS app integrates with LocalDevVPN and minimuxer for device communication, pairing, installation, refresh, activation, deactivation, and JIT workflows.
+
+          ## GitHub-built unsigned IPA
+
+          GitHub Actions builds the complete native app on `macos-26` with Xcode 26 for the physical-device `iphoneos` SDK and packages an unsigned arm64 IPA.
+          EOF
 
       - name: Select Xcode 26
         run: |
@@ -42,17 +62,58 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
-      - name: Install XcodeGen and native dependency
+      - name: Install XcodeGen and minimuxer
         run: |
+          set -euo pipefail
           brew install xcodegen
-          ./scripts/bootstrap-native.sh
+          TMP="$(mktemp -d)"
+          mkdir -p apps/ios/Frameworks
+          curl -fL --retry 4 --retry-all-errors \
+            'https://github.com/jkcoxson/minimuxer/releases/download/build/minimuxer.xcframework.zip' \
+            -o "$TMP/minimuxer.zip"
+          unzip -q "$TMP/minimuxer.zip" -d "$TMP/unpacked"
+          FRAMEWORK="$(find "$TMP/unpacked" -name 'minimuxer.xcframework' -type d | head -1)"
+          test -n "$FRAMEWORK"
+          rm -rf apps/ios/Frameworks/minimuxer.xcframework
+          cp -R "$FRAMEWORK" apps/ios/Frameworks/minimuxer.xcframework
+          (cd apps/ios && xcodegen generate)
+
+      - name: Capture minimuxer interface
+        run: |
+          set -euo pipefail
+          OUT=/tmp/minimuxer-interface
+          mkdir -p "$OUT"
+          find apps/ios/Frameworks/minimuxer.xcframework -type f -print | sort > "$OUT/files.txt"
+          while IFS= read -r file; do
+            case "$file" in
+              *.h|*.swiftinterface|*.swift|*/module.modulemap|*/Info.plist)
+                echo "===== $file =====" >> "$OUT/text-interface.txt"
+                cat "$file" >> "$OUT/text-interface.txt" || true
+                echo >> "$OUT/text-interface.txt"
+                ;;
+            esac
+          done < "$OUT/files.txt"
+          find apps/ios/Frameworks/minimuxer.xcframework -type f -perm +111 -print0 | while IFS= read -r -d '' bin; do
+            echo "===== $bin =====" >> "$OUT/symbols.txt"
+            nm -gU "$bin" 2>/dev/null | grep -E 'start|ready|target|minimux|yeet|install_ipa|remove_app|debug_app' >> "$OUT/symbols.txt" || true
+          done
+          cat "$OUT/text-interface.txt"
+          cat "$OUT/symbols.txt" || true
+
+      - name: Upload minimuxer interface
+        uses: actions/upload-artifact@v4
+        with:
+          name: minimuxer-interface
+          path: /tmp/minimuxer-interface
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Test portable Swift packages
         run: swift test --package-path packages/AtlasCore
 
       - name: Build full unsigned arm64 device IPA
         run: |
-          set -euo pipefail
+          set -uo pipefail
           xcodebuild \
             -project apps/ios/Atlas.xcodeproj \
             -scheme AtlasApp \
@@ -66,7 +127,14 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
             DEVELOPMENT_TEAM='' \
-            build
+            build > /tmp/atlas-xcodebuild.log 2>&1
+          STATUS=$?
+          if [ "$STATUS" -ne 0 ]; then
+            grep -E '(^| )error:|fatal error:|Undefined symbols|ld: ' /tmp/atlas-xcodebuild.log | tail -160 > /tmp/atlas-compiler-errors.txt || true
+            cat /tmp/atlas-compiler-errors.txt
+            exit "$STATUS"
+          fi
+          set -e
           APP='build/DerivedData/Build/Products/Release-iphoneos/Atlas.app'
           test -d "$APP"
           rm -rf "$APP/_CodeSignature"
@@ -80,17 +148,16 @@ jobs:
           test ! -e "$APP/embedded.mobileprovision"
           unzip -t build/artifacts/Atlas-unsigned.ipa
 
-      - name: Publish complete source to main
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          rm -rf build apps/ios/Frameworks apps/ios/Atlas.xcodeproj atlas-full-source.b64
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m 'Publish full native Atlas iOS app'
-          git push origin HEAD:main
+      - name: Upload Xcode failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Atlas-Xcode-failure-log
+          path: |
+            /tmp/atlas-xcodebuild.log
+            /tmp/atlas-compiler-errors.txt
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload verified full-app IPA
         uses: actions/upload-artifact@v4
@@ -101,3 +168,13 @@ jobs:
             build/artifacts/Atlas-unsigned.ipa.sha256
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish complete source to main
+        run: |
+          set -euo pipefail
+          rm -rf build apps/ios/Frameworks apps/ios/Atlas.xcodeproj atlas-import-part-* atlas-full-source.b64.* IMPORT.md IMPORT_READY RETRY_* NATIVE_ONLY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Publish full native Atlas iOS app'
+          git push origin HEAD:main
