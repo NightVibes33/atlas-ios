@@ -75,7 +75,7 @@ jobs:
 
       - name: Build full unsigned arm64 device IPA
         run: |
-          set -euo pipefail
+          set -uo pipefail
           xcodebuild \
             -project apps/ios/Atlas.xcodeproj \
             -scheme AtlasApp \
@@ -89,7 +89,14 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
             DEVELOPMENT_TEAM='' \
-            build
+            build > /tmp/atlas-xcodebuild.log 2>&1
+          STATUS=$?
+          if [ "$STATUS" -ne 0 ]; then
+            echo '--- Xcode compiler errors ---'
+            grep -E '(^| )error:|fatal error:|Undefined symbols|ld: ' /tmp/atlas-xcodebuild.log | tail -120 || tail -120 /tmp/atlas-xcodebuild.log
+            exit "$STATUS"
+          fi
+          set -e
           APP='build/DerivedData/Build/Products/Release-iphoneos/Atlas.app'
           test -d "$APP"
           rm -rf "$APP/_CodeSignature"
@@ -116,7 +123,7 @@ jobs:
       - name: Publish complete source to main
         run: |
           set -euo pipefail
-          rm -rf build apps/ios/Frameworks apps/ios/Atlas.xcodeproj atlas-import-part-* atlas-full-source.b64.* IMPORT.md IMPORT_READY
+          rm -rf build apps/ios/Frameworks apps/ios/Atlas.xcodeproj atlas-import-part-* atlas-full-source.b64.* IMPORT.md IMPORT_READY RETRY_NATIVE_BUILD
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
