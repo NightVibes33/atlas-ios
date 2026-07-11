@@ -92,8 +92,8 @@ jobs:
             build > /tmp/atlas-xcodebuild.log 2>&1
           STATUS=$?
           if [ "$STATUS" -ne 0 ]; then
-            echo '--- Xcode compiler errors ---'
-            grep -E '(^| )error:|fatal error:|Undefined symbols|ld: ' /tmp/atlas-xcodebuild.log | tail -120 || tail -120 /tmp/atlas-xcodebuild.log
+            grep -E '(^| )error:|fatal error:|Undefined symbols|ld: ' /tmp/atlas-xcodebuild.log | tail -120 > /tmp/atlas-compiler-errors.txt || true
+            cat /tmp/atlas-compiler-errors.txt
             exit "$STATUS"
           fi
           set -e
@@ -110,6 +110,17 @@ jobs:
           test ! -e "$APP/embedded.mobileprovision"
           unzip -t build/artifacts/Atlas-unsigned.ipa
 
+      - name: Upload Xcode failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Atlas-Xcode-failure-log
+          path: |
+            /tmp/atlas-xcodebuild.log
+            /tmp/atlas-compiler-errors.txt
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Upload verified full-app IPA
         uses: actions/upload-artifact@v4
         with:
@@ -123,7 +134,7 @@ jobs:
       - name: Publish complete source to main
         run: |
           set -euo pipefail
-          rm -rf build apps/ios/Frameworks apps/ios/Atlas.xcodeproj atlas-import-part-* atlas-full-source.b64.* IMPORT.md IMPORT_READY RETRY_NATIVE_BUILD
+          rm -rf build apps/ios/Frameworks apps/ios/Atlas.xcodeproj atlas-import-part-* atlas-full-source.b64.* IMPORT.md IMPORT_READY RETRY_NATIVE_BUILD RETRY_COMPILER_ERRORS
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
