@@ -22,11 +22,12 @@ jobs:
       - name: Reconstruct full source
         run: |
           set -euo pipefail
-          test -f atlas-full-source.b64
+          ls atlas-full-source.b64.* >/dev/null
+          cat atlas-full-source.b64.* > /tmp/atlas-full-source.b64
           python3 - <<'PY'
           import base64
           from pathlib import Path
-          Path('/tmp/atlas-full-source.tar.gz').write_bytes(base64.b64decode(Path('atlas-full-source.b64').read_bytes()))
+          Path('/tmp/atlas-full-source.tar.gz').write_bytes(base64.b64decode(Path('/tmp/atlas-full-source.b64').read_bytes()))
           PY
           mkdir -p /tmp/atlas-full-source
           tar -xzf /tmp/atlas-full-source.tar.gz -C /tmp/atlas-full-source
@@ -80,18 +81,6 @@ jobs:
           test ! -e "$APP/embedded.mobileprovision"
           unzip -t build/artifacts/Atlas-unsigned.ipa
 
-      - name: Publish complete source to main
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          rm -rf build apps/ios/Frameworks apps/ios/Atlas.xcodeproj atlas-full-source.b64
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m 'Publish full native Atlas iOS app'
-          git push origin HEAD:main
-
       - name: Upload verified full-app IPA
         uses: actions/upload-artifact@v4
         with:
@@ -101,3 +90,13 @@ jobs:
             build/artifacts/Atlas-unsigned.ipa.sha256
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish complete source to main
+        run: |
+          set -euo pipefail
+          rm -rf build apps/ios/Frameworks apps/ios/Atlas.xcodeproj atlas-full-source.b64.*
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Publish full native Atlas iOS app'
+          git push origin HEAD:main
