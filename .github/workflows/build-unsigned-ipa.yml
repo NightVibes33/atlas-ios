@@ -19,19 +19,21 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
-      - name: Reconstruct full source
+      - name: Reconstruct hash-verified full source
         run: |
           set -euo pipefail
-          ls atlas-full-source.b64.* >/dev/null
-          cat atlas-full-source.b64.* > /tmp/atlas-full-source.b64
+          ls atlas-import-part-* >/dev/null
+          cat atlas-import-part-* > /tmp/atlas-native-source.b64
+          echo '75bd061daa5a16676a1423e5fc3bab47be7c88bdaf7b8d677dc4be6012f46316  /tmp/atlas-native-source.b64' | shasum -a 256 -c -
           python3 - <<'PY'
           import base64
           from pathlib import Path
-          Path('/tmp/atlas-full-source.tar.gz').write_bytes(base64.b64decode(Path('/tmp/atlas-full-source.b64').read_bytes()))
+          Path('/tmp/atlas-native-source.tar.gz').write_bytes(base64.b64decode(Path('/tmp/atlas-native-source.b64').read_bytes()))
           PY
-          mkdir -p /tmp/atlas-full-source
-          tar -xzf /tmp/atlas-full-source.tar.gz -C /tmp/atlas-full-source
-          rsync -a --delete --exclude='.git/' /tmp/atlas-full-source/ ./
+          echo 'e24e88bfad848f82756d5de298d0ea91a3a9d72f6fde9b08ec200f340912dd6d  /tmp/atlas-native-source.tar.gz' | shasum -a 256 -c -
+          mkdir -p /tmp/atlas-native-source
+          tar -xzf /tmp/atlas-native-source.tar.gz -C /tmp/atlas-native-source
+          rsync -a --delete --exclude='.git/' /tmp/atlas-native-source/ ./
           chmod +x scripts/*.sh
 
       - name: Select Xcode 26
@@ -94,7 +96,7 @@ jobs:
       - name: Publish complete source to main
         run: |
           set -euo pipefail
-          rm -rf build apps/ios/Frameworks apps/ios/Atlas.xcodeproj atlas-full-source.b64.*
+          rm -rf build apps/ios/Frameworks apps/ios/Atlas.xcodeproj atlas-import-part-* atlas-full-source.b64.* IMPORT.md IMPORT_READY
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
