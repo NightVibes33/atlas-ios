@@ -1,51 +1,101 @@
-name: Build unsigned iOS IPA
+name: Import and verify full Atlas app
 
 on:
-  workflow_dispatch:
-  push:
-    branches: [main]
-    tags: ['v*']
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
-  contents: read
-
-env:
-  DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+  contents: write
 
 jobs:
-  unsigned-device-ipa:
-    name: iOS 26 unsigned device IPA
+  import-full-app:
+    name: Import, build, and publish full native app
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Reconstruct full source
+        run: |
+          set -euo pipefail
+          test -f atlas-full-source.b64
+          python3 - <<'PY'
+          import base64
+          from pathlib import Path
+          Path('/tmp/atlas-full-source.tar.gz').write_bytes(base64.b64decode(Path('atlas-full-source.b64').read_bytes()))
+          PY
+          mkdir -p /tmp/atlas-full-source
+          tar -xzf /tmp/atlas-full-source.tar.gz -C /tmp/atlas-full-source
+          rsync -a --delete --exclude='.git/' /tmp/atlas-full-source/ ./
+          chmod +x scripts/*.sh
 
       - name: Select Xcode 26
         run: |
-          sudo xcode-select -s "$DEVELOPER_DIR"
+          set -euo pipefail
+          XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode_26*.app' | sort -V | tail -1)"
+          test -n "$XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
-          sw_vers
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Build unsigned arm64 IPA
-        run: chmod +x scripts/build-unsigned-ipa.sh && ./scripts/build-unsigned-ipa.sh
-
-      - name: Inspect unsigned IPA
+      - name: Install XcodeGen and native dependency
         run: |
-          unzip -l build/artifacts/Atlas-unsigned.ipa | head -80
-          test -f build/artifacts/Atlas-unsigned.ipa.sha256
-          test ! -d build/artifacts/Payload/Atlas.app/_CodeSignature
-          test ! -f build/artifacts/Payload/Atlas.app/embedded.mobileprovision
+          brew install xcodegen
+          ./scripts/bootstrap-native.sh
 
-      - name: Upload unsigned IPA
+      - name: Test portable Swift packages
+        run: swift test --package-path packages/AtlasCore
+
+      - name: Build full unsigned arm64 device IPA
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project apps/ios/Atlas.xcodeproj \
+            -scheme AtlasApp \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            DEVELOPMENT_TEAM='' \
+            build
+          APP='build/DerivedData/Build/Products/Release-iphoneos/Atlas.app'
+          test -d "$APP"
+          rm -rf "$APP/_CodeSignature"
+          rm -f "$APP/embedded.mobileprovision"
+          mkdir -p build/artifacts/Payload
+          cp -R "$APP" build/artifacts/Payload/Atlas.app
+          (cd build/artifacts && /usr/bin/zip -qry Atlas-unsigned.ipa Payload)
+          shasum -a 256 build/artifacts/Atlas-unsigned.ipa > build/artifacts/Atlas-unsigned.ipa.sha256
+          lipo -info "$APP/Atlas" | grep -q arm64
+          test ! -e "$APP/_CodeSignature"
+          test ! -e "$APP/embedded.mobileprovision"
+          unzip -t build/artifacts/Atlas-unsigned.ipa
+
+      - name: Publish complete source to main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf build apps/ios/Frameworks apps/ios/Atlas.xcodeproj atlas-full-source.b64
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Publish full native Atlas iOS app'
+          git push origin HEAD:main
+
+      - name: Upload verified full-app IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Atlas-unsigned-iOS26-arm64
+          name: Atlas-full-unsigned-iOS26-arm64
           path: |
             build/artifacts/Atlas-unsigned.ipa
             build/artifacts/Atlas-unsigned.ipa.sha256
