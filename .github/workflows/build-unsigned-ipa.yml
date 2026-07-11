@@ -1,0 +1,53 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+
+jobs:
+  unsigned-device-ipa:
+    name: iOS 26 unsigned device IPA
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          sudo xcode-select -s "$DEVELOPER_DIR"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          sw_vers
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build unsigned arm64 IPA
+        run: chmod +x scripts/build-unsigned-ipa.sh && ./scripts/build-unsigned-ipa.sh
+
+      - name: Inspect unsigned IPA
+        run: |
+          unzip -l build/artifacts/Atlas-unsigned.ipa | head -80
+          test -f build/artifacts/Atlas-unsigned.ipa.sha256
+          test ! -d build/artifacts/Payload/Atlas.app/_CodeSignature
+          test ! -f build/artifacts/Payload/Atlas.app/embedded.mobileprovision
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Atlas-unsigned-iOS26-arm64
+          path: |
+            build/artifacts/Atlas-unsigned.ipa
+            build/artifacts/Atlas-unsigned.ipa.sha256
+          if-no-files-found: error
+          retention-days: 30
