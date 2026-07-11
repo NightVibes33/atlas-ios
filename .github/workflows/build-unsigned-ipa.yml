@@ -45,9 +45,29 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
-      - name: Install XcodeGen and native dependency
+      - name: Install XcodeGen and minimuxer
         run: |
+          set -euo pipefail
           brew install xcodegen
+          cat > scripts/bootstrap-native.sh <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+          OUT="$ROOT/apps/ios/Frameworks"
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          mkdir -p "$OUT"
+          URL='https://github.com/jkcoxson/minimuxer/releases/download/build/minimuxer.xcframework.zip'
+          curl -fL --retry 4 --retry-all-errors "$URL" -o "$TMP/minimuxer.zip"
+          unzip -q "$TMP/minimuxer.zip" -d "$TMP/unpacked"
+          FRAMEWORK="$(find "$TMP/unpacked" -name 'minimuxer.xcframework' -type d | head -1)"
+          test -n "$FRAMEWORK"
+          rm -rf "$OUT/minimuxer.xcframework"
+          cp -R "$FRAMEWORK" "$OUT/minimuxer.xcframework"
+          command -v xcodegen >/dev/null
+          (cd "$ROOT/apps/ios" && xcodegen generate)
+          SCRIPT
+          chmod +x scripts/bootstrap-native.sh
           ./scripts/bootstrap-native.sh
 
       - name: Test portable Swift packages
